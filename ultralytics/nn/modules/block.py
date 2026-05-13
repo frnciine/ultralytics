@@ -57,6 +57,9 @@ __all__ = (
     "ResNetLayer",
     "SCDown",
     "TorchVision",
+    "ModifiedCBAM",
+    "CustomDoubleConv",
+    "DoubleConvBackbone",
 )
 
 
@@ -2495,3 +2498,201 @@ class RealNVP(nn.Module):
             self.float()
         z, log_det = self.backward_p(x)
         return self.prior.log_prob(z) + log_det
+
+
+class ModifiedCBAM(nn.Module):
+    """
+    Modified CBAM attention using 1 + tanh(z) instead of sigmoid(z).
+
+    This allows attention values to range approximately from 0 to 2:
+        0 = suppress
+        1 = preserve
+        2 = enhance
+    """
+
+    def __init__(self, channels: int, reduction: int = 16, kernel_size: int = 7):
+        super().__init__()
+
+        hidden_channels = max(1, channels // reduction)
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+
+        self.mlp = nn.Sequential(
+            nn.Conv2d(channels, hidden_channels, kernel_size=1, bias=False),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(hidden_channels, channels, kernel_size=1, bias=False),
+        )
+
+        padding = kernel_size // 2
+        self.spatial_conv = nn.Conv2d(
+            2,
+            1,
+            kernel_size=kernel_size,
+            padding=padding,
+            bias=False,
+        )
+
+    def forward(self, x):
+        avg_out = self.mlp(self.avg_pool(x))
+        max_out = self.mlp(self.max_pool(x))
+
+        channel_attention = 1 + torch.tanh(avg_out + max_out)
+        x = x * channel_attention
+
+        avg_map = torch.mean(x, dim=1, keepdim=True)
+        max_map, _ = torch.max(x, dim=1, keepdim=True)
+
+        spatial_input = torch.cat([avg_map, max_map], dim=1)
+        spatial_attention = 1 + torch.tanh(self.spatial_conv(spatial_input))
+
+        return x * spatial_attention
+
+
+class CustomDoubleConv(nn.Module):
+    """
+    Custom residual DoubleConv block with depthwise spatial mixing and modified CBAM.
+
+    Uses Ultralytics Conv and DWConv modules.
+    """
+
+    expansion = 1
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int,
+        reduction: int = 16,
+        layer_scale_init_value: float = 1e-6,
+    ):
+        super().__init__()
+
+        # DoubleConv part
+        self.cv1 = Conv(c1, c2, k=3, s=1)
+        self.cv2 = Conv(c2, c2, k=3, s=1, act=False)
+
+        # 7x7 depthwise spatial mixer
+        self.dw = DWConv(c2, c2, k=7, s=1)
+
+        # Modified CBAM attention
+        self.attention = ModifiedCBAM(c2, reduction=reduction)
+
+        # Residual shortcut
+        self.shortcut = Conv(c1, c2, k=1, s=1, act=False) if c1 != c2 else nn.Identity()
+
+        if layer_scale_init_value > 0:
+            self.layer_scale = nn.Parameter(layer_scale_init_value * torch.ones(c2))
+        else:
+            self.layer_scale = None
+
+        self.act = nn.SiLU(inplace=True)
+
+    def forward(self, x):
+        identity = self.shortcut(x)
+
+        out = self.cv1(x)
+        out = self.cv2(out)
+        out = self.dw(out)
+        out = self.attention(out)
+
+        if self.layer_scale is not None:
+            out = out * self.layer_scale.view(1, -1, 1, 1)
+
+        return self.act(out + identity)
+
+
+class DoubleConvBackbone(nn.Module):
+    """
+    Custom YOLO26 backbone using CustomDoubleConv blocks.
+
+    Returns:
+        [P3, P4, P5]
+    """
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int = 1024,
+        out_channels=(256, 512, 1024),
+        zero_init_residual: bool = False,
+    ):
+        super().__init__()
+
+        if len(out_channels) != 3:
+            raise ValueError("out_channels must provide P3, P4, and P5 channel sizes.")
+
+        self.c2 = c2
+
+        # 640 -> 320 -> 160
+        self.stem = nn.Sequential(
+            Conv(c1, 64, k=7, s=2),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+        )
+
+        # 160 x 160
+        self.layer1 = nn.Sequential(
+            CustomDoubleConv(64, 64),
+            CustomDoubleConv(64, 64),
+        )
+
+        # 160 -> 80, P3
+        self.down2 = Conv(64, 128, k=3, s=2)
+        self.layer2 = nn.Sequential(
+            CustomDoubleConv(128, 128),
+            CustomDoubleConv(128, 128),
+        )
+
+        # 80 -> 40, P4
+        self.down3 = Conv(128, 256, k=3, s=2)
+        self.layer3 = nn.Sequential(
+            CustomDoubleConv(256, 256),
+            CustomDoubleConv(256, 256),
+        )
+
+        # 40 -> 20, P5
+        self.down4 = Conv(256, 512, k=3, s=2)
+        self.layer4 = nn.Sequential(
+            CustomDoubleConv(512, 512),
+            CustomDoubleConv(512, 512),
+        )
+
+        # Project to YOLO head channels
+        self.p3_proj = Conv(128, out_channels[0], k=1, s=1)
+        self.p4_proj = Conv(256, out_channels[1], k=1, s=1)
+        self.p5_proj = Conv(512, out_channels[2], k=1, s=1)
+
+        self._init_weights()
+
+        if zero_init_residual:
+            for module in self.modules():
+                if isinstance(module, CustomDoubleConv):
+                    if hasattr(module.cv2, "bn"):
+                        nn.init.constant_(module.cv2.bn.weight, 0)
+
+    def _init_weights(self):
+        for module in self.modules():
+            if isinstance(module, nn.Conv2d):
+                nn.init.kaiming_normal_(module.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(module, nn.BatchNorm2d):
+                nn.init.constant_(module.weight, 1)
+                nn.init.constant_(module.bias, 0)
+
+    def forward(self, x):
+        x = self.stem(x)
+
+        x = self.layer1(x)
+
+        x = self.down2(x)
+        p3 = self.layer2(x)
+
+        x = self.down3(p3)
+        p4 = self.layer3(x)
+
+        x = self.down4(p4)
+        p5 = self.layer4(x)
+
+        return [
+            self.p3_proj(p3),
+            self.p4_proj(p4),
+            self.p5_proj(p5),
+        ]

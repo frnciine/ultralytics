@@ -69,6 +69,9 @@ from .block import (
     ResNetLayer,
     SCDown,
     TorchVision,
+    ModifiedCBAM,
+    CustomDoubleConv,
+    DoubleConvBackbone,
 )
 from .conv import (
     CBAM,
@@ -226,4 +229,7 @@ __all__ = (
     "YOLOESegment",
     "YOLOESegment26",
     "v10Detect",
+    "ModifiedCBAM",
+    "CustomDoubleConv",
+    "DoubleConvBackbone",
 )
