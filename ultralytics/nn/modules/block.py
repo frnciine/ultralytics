@@ -2519,3 +2519,43 @@ Input:
 - but as backbone, can accept any input imgsz
 """
 
+class BasicConv2d(nn.Module):
+    # Single Conv + BN + ReLU
+    # Building block for IRv2 modules
+
+    def __init__(self, in_channel, out_channel, kernel_size, stride=1, padding=0):
+        super().__init__()
+
+        self.conv = nn.Conv2d(in_channel, out_channel, kernel_size,
+                              stride=stride, padding=padding, bias=False)
+        self.bn = nn.BatchNorm2d(out_channel, eps=1e-3)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        return self.relu(self.bn(self.conv(x)))
+    
+class CustomDoubleConv(nn.Module):
+    # Two stacked Conv(3x3) + BN + ReLU layers
+    # Preserves spatial size when stride=1 (padding=1)
+    # Used repeatedly inside InceptionResNetV2Backbone as channel-transition and
+    # refinement layers between Inception-ResNet stages
+
+    def __init__(self, c1: int, c2: int):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(c1, c2, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(c2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(c2, c2, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(c2),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.block(x)
+
+""" 
+IRv2 Internal Blocks
+- Stem, IR-A, Reduction-A, IR-B, Reduction-B, IR-C
+"""
+
