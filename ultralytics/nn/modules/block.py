@@ -64,7 +64,8 @@ __all__ = (
     "ReductionA",
     "InceptionResNetB",
     "ReductionB",
-    "InceptionResNetCInceptionResNetV2Backbone"
+    "InceptionResNetC",
+    "InceptionResNetV2Backbone"
 )
 
 

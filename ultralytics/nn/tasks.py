@@ -77,6 +77,15 @@ from ultralytics.nn.modules import (
     YOLOESegment26,
     v10Detect,
     MyConvBlock,
+    BasicConv2d,
+    CustomDoubleConv,
+    Stem,
+    InceptionResNetA,
+    ReductionA ,
+    InceptionResNetB,
+    ReductionB,
+    InceptionResNetC,
+    InceptionResNetV2Backbone
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, WINDOWS, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1636,6 +1645,7 @@ def parse_model(d, ch, verbose=True):
             C2fCIB,
             C2PSA,
             A2C2f,
+            InceptionResNetV2Backbone
         }
     )
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
@@ -1719,6 +1729,10 @@ def parse_model(d, ch, verbose=True):
             args = [c1, c2, *args[1:]]
         elif m is CBFuse:
             c2 = ch[f[-1]]
+        elif m is InceptionResNetV2Backbone:
+            c1 = ch[f]
+            c2 = args[0]
+            args = [c1, *args[1:]]
         elif m is DraxNet:
             c1, c2 = ch[f], args[0]
             args = [c1, *args]

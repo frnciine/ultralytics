@@ -76,7 +76,8 @@ from .block import (
     ReductionA ,
     InceptionResNetB,
     ReductionB,
-    InceptionResNetCInceptionResNetV2Backbone
+    InceptionResNetC,
+    InceptionResNetV2Backbone
 )
 from .conv import (
     CBAM,
@@ -241,5 +242,6 @@ __all__ = (
     "ReductionA",
     "InceptionResNetB",
     "ReductionB",
-    "InceptionResNetCInceptionResNetV2Backbone"
+    "InceptionResNetC",
+    "InceptionResNetV2Backbone"
 )
