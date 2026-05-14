@@ -2495,3 +2495,99 @@ class RealNVP(nn.Module):
             self.float()
         z, log_det = self.backward_p(x)
         return self.prior.log_prob(z) + log_det
+
+def conv3x3(in_planes, out_planes, stride=1):
+    """3x3 convolution with padding"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=1, bias=False)
+
+class CustomDoubleConv(nn.Module):
+    """
+    Adapted from RetinaNet's BasicBlock to fulfill the CustomDoubleConv requirements.
+    """
+    expansion = 1
+
+    def __init__(self, c1: int, c2: int, stride=1):
+        super(CustomDoubleConv, self).__init__()
+        
+        # First convolution
+        self.conv1 = conv3x3(c1, c2, stride)
+        self.bn1 = nn.BatchNorm2d(c2)
+        self.relu = nn.ReLU(inplace=True)
+        
+        # Second convolution
+        self.conv2 = conv3x3(c2, c2)
+        self.bn2 = nn.BatchNorm2d(c2)
+        
+        # Residual downsample if channel dimensions change or stride > 1
+        self.downsample = None
+        if stride != 1 or c1 != c2 * self.expansion:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(c1, c2 * self.expansion, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(c2 * self.expansion),
+            )
+            
+        self.stride = stride
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = self.relu(out)
+
+        return out
+    
+class DoubleConvBackbone(nn.Module):
+    def __init__(self, c1: int, c2: int = 1024, out_channels=(256, 512, 1024), layers=[2, 2, 2, 2]):
+        super(DoubleConvBackbone, self).__init__()
+        self.inplanes = 64
+
+        self.conv1 = nn.Conv2d(c1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        # Generating the main feature extraction stages
+        self.layer1 = self._make_layer(CustomDoubleConv, 64, layers[0])
+        self.layer2 = self._make_layer(CustomDoubleConv, 128, layers[1], stride=2)
+        self.layer3 = self._make_layer(CustomDoubleConv, 256, layers[2], stride=2)
+        self.layer4 = self._make_layer(CustomDoubleConv, 512, layers[3], stride=2)
+
+        # Projection layers to align the output channels to what the YOLO head expects
+        self.p3_proj = nn.Conv2d(128, out_channels[0], kernel_size=1)
+        self.p4_proj = nn.Conv2d(256, out_channels[1], kernel_size=1)
+        self.p5_proj = nn.Conv2d(512, out_channels[2], kernel_size=1)
+
+        self.c2 = c2
+
+    def _make_layer(self, block, planes, blocks, stride=1):
+        """Helper method derived from the ResNet implementation to stack blocks."""
+        layers = [block(self.inplanes, planes, stride)]
+        self.inplanes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(block(self.inplanes, planes))
+        return nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x1 = self.layer1(x)
+        p3 = self.layer2(x1)  # First scale output
+        p4 = self.layer3(p3)  # Second scale output
+        p5 = self.layer4(p4)  # Third scale output
+
+        # Return the projected list of feature maps
+        return [self.p3_proj(p3), self.p4_proj(p4), self.p5_proj(p5)]
