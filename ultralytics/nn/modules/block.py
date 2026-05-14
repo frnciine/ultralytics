@@ -57,6 +57,14 @@ __all__ = (
     "ResNetLayer",
     "SCDown",
     "TorchVision",
+    "BasicConv2d",
+    "CustomDoubleConv",
+    "Stem",
+    "InceptionResNetA",
+    "ReductionA",
+    "InceptionResNetB",
+    "ReductionB",
+    "InceptionResNetCInceptionResNetV2Backbone"
 )
 
 

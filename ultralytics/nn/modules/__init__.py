@@ -69,6 +69,14 @@ from .block import (
     ResNetLayer,
     SCDown,
     TorchVision,
+    BasicConv2d,
+    CustomDoubleConv,
+    Stem,
+    InceptionResNetA,
+    ReductionA ,
+    InceptionResNetB,
+    ReductionB,
+    InceptionResNetCInceptionResNetV2Backbone
 )
 from .conv import (
     CBAM,
@@ -226,4 +234,12 @@ __all__ = (
     "YOLOESegment",
     "YOLOESegment26",
     "v10Detect",
+    "BasicConv2d",
+    "CustomDoubleConv",
+    "Stem",
+    "InceptionResNetA",
+    "ReductionA",
+    "InceptionResNetB",
+    "ReductionB",
+    "InceptionResNetCInceptionResNetV2Backbone"
 )
