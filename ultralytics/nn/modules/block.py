@@ -2495,3 +2495,27 @@ class RealNVP(nn.Module):
             self.float()
         z, log_det = self.backward_p(x)
         return self.prior.log_prob(z) + log_det
+
+"""
+WILL BE USING INCEPTION-RESNET-V2 (IRv2)
+- https://arxiv.org/pdf/1602.07261
+
+Got the idea from this paper:
+- https://link.springer.com/chapter/10.1007/978-3-030-51935-3_30
+- tldr:
+    - compared object detection backbones
+    - IRv2 a strong performer
+    - also since we used inception before i figure Why The Fuck Not
+
+Flow:
+Input (299x299x3) -> Stem -> 5 x Inception-resnet-A -> Reduction-A -┐
+┌-------------------------------------------------------------------┘
+└-> 10 x Inception-resnet-B -> Reduction-B -> 5 x Inception-resnet-C -┐
+┌---------------------------------------------------------------------┘
+└-> Average Pooling -> Dropout -> Softmax
+
+Input:
+- designed to get 299x299 input, but imgsz is 640x640
+- but as backbone, can accept any input imgsz
+"""
+
