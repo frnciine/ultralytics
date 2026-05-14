@@ -2502,9 +2502,6 @@ def conv3x3(in_planes, out_planes, stride=1):
                      padding=1, bias=False)
 
 class CustomDoubleConv(nn.Module):
-    """
-    Adapted from RetinaNet's BasicBlock to fulfill the CustomDoubleConv requirements.
-    """
     expansion = 1
 
     def __init__(self, c1: int, c2: int, stride=1):
