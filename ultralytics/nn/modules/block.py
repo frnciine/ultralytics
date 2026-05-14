@@ -2534,6 +2534,7 @@ class BasicConv2d(nn.Module):
     def forward(self, x):
         return self.relu(self.bn(self.conv(x)))
     
+
 class CustomDoubleConv(nn.Module):
     # Two stacked Conv(3x3) + BN + ReLU layers
     # Preserves spatial size when stride=1 (padding=1)
@@ -2559,3 +2560,209 @@ IRv2 Internal Blocks
 - Stem, IR-A, Reduction-A, IR-B, Reduction-B, IR-C
 """
 
+class Stem(nn.Module):
+    """
+    Input:  (N, in_ch, H, W)
+    Output: (N, 192, H/8, W/8)   
+    - e.g. 640 -> 80
+    """
+    def __init__(self, in_ch=3):
+        super().__init__()
+        self.conv1 = BasicConv2d(in_ch, 32, 3, stride=2, padding=1)  # /2
+        self.conv2 = BasicConv2d(32, 32, 3, padding=1)
+        self.conv3 = BasicConv2d(32, 64, 3, padding=1)
+        self.maxpool = nn.MaxPool2d(3, stride=2, padding=1)          # /2
+        self.conv4 = BasicConv2d(64, 80, 1)
+        self.conv5 = BasicConv2d(80, 192, 3, padding=1)
+        self.conv6 = BasicConv2d(192, 192, 3, stride=2, padding=1)   # /2
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = self.maxpool(x)
+        x = self.conv4(x)
+        x = self.conv5(x)
+        x = self.conv6(x)
+        return x
+
+
+class InceptionResNetA(nn.Module):
+    """
+    320 ch in/out (residual)
+    Spatial preserved
+    """
+    def __init__(self, in_ch=320, scale=0.17):
+        super().__init__()
+        self.scale = scale
+        self.branch0 = BasicConv2d(in_ch, 32, 1)
+        self.branch1 = nn.Sequential(
+            BasicConv2d(in_ch, 32, 1),
+            BasicConv2d(32, 32, 3, padding=1),
+        )
+        self.branch2 = nn.Sequential(
+            BasicConv2d(in_ch, 32, 1),
+            BasicConv2d(32, 48, 3, padding=1),
+            BasicConv2d(48, 64, 3, padding=1),
+        )
+        self.conv_up = nn.Conv2d(128, in_ch, 1)  # 32+32+64=128
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        mixed = torch.cat([self.branch0(x), self.branch1(x), self.branch2(x)], dim=1)
+        return self.relu(x + self.scale * self.conv_up(mixed))
+    
+
+class ReductionA(nn.Module):
+    """
+    320 -> 1088 channels
+    spatial /2
+    """
+    def __init__(self, in_ch=320):
+        super().__init__()
+        self.branch0 = BasicConv2d(in_ch, 384, 3, stride=2, padding=1)
+        self.branch1 = nn.Sequential(
+            BasicConv2d(in_ch, 256, 1),
+            BasicConv2d(256, 256, 3, padding=1),
+            BasicConv2d(256, 384, 3, stride=2, padding=1),
+        )
+        self.branch2 = nn.MaxPool2d(3, stride=2, padding=1)
+        # output: 384 + 384 + 320 = 1088
+
+    def forward(self, x):
+        return torch.cat([self.branch0(x), self.branch1(x), self.branch2(x)], dim=1)
+
+
+class InceptionResNetB(nn.Module):
+    """
+    1088 ch in/out (residual)
+    Spatial preserved
+    """
+    def __init__(self, in_ch=1088, scale=0.10):
+        super().__init__()
+        self.scale = scale
+        self.branch0 = BasicConv2d(in_ch, 192, 1)
+        self.branch1 = nn.Sequential(
+            BasicConv2d(in_ch, 128, 1),
+            BasicConv2d(128, 160, (1, 7), padding=(0, 3)),
+            BasicConv2d(160, 192, (7, 1), padding=(3, 0)),
+        )
+        self.conv_up = nn.Conv2d(384, in_ch, 1)  # 192+192=384
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        mixed = torch.cat([self.branch0(x), self.branch1(x)], dim=1)
+        return self.relu(x + self.scale * self.conv_up(mixed))
+
+
+class ReductionB(nn.Module):
+    """
+    1088 -> 2080 channels
+    spatial /2
+    """
+    def __init__(self, in_ch=1088):
+        super().__init__()
+        self.branch0 = nn.Sequential(
+            BasicConv2d(in_ch, 256, 1),
+            BasicConv2d(256, 384, 3, stride=2, padding=1),
+        )
+        self.branch1 = nn.Sequential(
+            BasicConv2d(in_ch, 256, 1),
+            BasicConv2d(256, 288, 3, stride=2, padding=1),
+        )
+        self.branch2 = nn.Sequential(
+            BasicConv2d(in_ch, 256, 1),
+            BasicConv2d(256, 288, 3, padding=1),
+            BasicConv2d(288, 320, 3, stride=2, padding=1),
+        )
+        self.branch3 = nn.MaxPool2d(3, stride=2, padding=1)
+        # output: 384 + 288 + 320 + 1088 = 2080
+
+    def forward(self, x):
+        return torch.cat([self.branch0(x), self.branch1(x),
+                          self.branch2(x), self.branch3(x)], dim=1)
+
+
+class InceptionResNetC(nn.Module):
+    """
+    2080 ch in/out (residual)
+    Spatial preserved
+    """
+    def __init__(self, in_ch=2080, scale=0.20):
+        super().__init__()
+        self.scale = scale
+        self.branch0 = BasicConv2d(in_ch, 192, 1)
+        self.branch1 = nn.Sequential(
+            BasicConv2d(in_ch, 192, 1),
+            BasicConv2d(192, 224, (1, 3), padding=(0, 1)),
+            BasicConv2d(224, 256, (3, 1), padding=(1, 0)),
+        )
+        self.conv_up = nn.Conv2d(448, in_ch, 1)  # 192+256=448
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        mixed = torch.cat([self.branch0(x), self.branch1(x)], dim=1)
+        return self.relu(x + self.scale * self.conv_up(mixed))
+    
+"""
+ACTUAL INCEPTION-RESNET-V2 BACKBONE
+"""
+
+class InceptionResNetV2Backbone(nn.Module):
+    """
+    Uses CustomDoubleConv repeatedly as channel-transition / refinement
+    layers between Inception-ResNet stages:
+      - doubleconv_pre_a:  192  -> 320   (after stem, before A blocks)
+      - doubleconv_post_a: 1088 -> 1088  (refinement after Reduction-A)
+      - doubleconv_post_b: 2080 -> 2080  (refinement after Reduction-B)
+
+    Returns [P3, P4, P5] at strides 8, 16, 32.
+    """
+
+    def __init__(self, c1=3, out_channels=(256, 512, 1024),
+                 num_a=5, num_b=10, num_c=5):
+        super().__init__()
+        self.stem = Stem(c1)                                    # 192 ch,  stride 8
+
+        # DoubleConv use #1: channel bump before A blocks
+        self.doubleconv_pre_a = CustomDoubleConv(192, 320)      # 320 ch,  stride 8
+
+        self.blocks_a = nn.Sequential(
+            *[InceptionResNetA(320) for _ in range(num_a)]
+        )                                                       # 320 ch,  stride 8 (P3 tap)
+
+        self.reduction_a = ReductionA(320)                      # 1088 ch, stride 16
+        # DoubleConv use #2: refinement after Reduction-A
+        self.doubleconv_post_a = CustomDoubleConv(1088, 1088)   # 1088 ch, stride 16
+
+        self.blocks_b = nn.Sequential(
+            *[InceptionResNetB(1088) for _ in range(num_b)]
+        )                                                       # 1088 ch, stride 16 (P4 tap)
+
+        self.reduction_b = ReductionB(1088)                     # 2080 ch, stride 32
+        # DoubleConv use #3: refinement after Reduction-B
+        self.doubleconv_post_b = CustomDoubleConv(2080, 2080)   # 2080 ch, stride 32
+
+        self.blocks_c = nn.Sequential(
+            *[InceptionResNetC(2080) for _ in range(num_c)]
+        )                                                       # 2080 ch, stride 32 (P5 tap)
+
+        # 1x1 projections so YOLO head sees standard channel counts
+        self.p3_proj = nn.Conv2d(320, out_channels[0], 1)
+        self.p4_proj = nn.Conv2d(1088, out_channels[1], 1)
+        self.p5_proj = nn.Conv2d(2080, out_channels[2], 1)
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.doubleconv_pre_a(x)
+        p3 = self.blocks_a(x)
+
+        x = self.reduction_a(p3)
+        x = self.doubleconv_post_a(x)
+        p4 = self.blocks_b(x)
+
+        x = self.reduction_b(p4)
+        x = self.doubleconv_post_b(x)
+        p5 = self.blocks_c(x)
+
+        return [self.p3_proj(p3), self.p4_proj(p4), self.p5_proj(p5)]
