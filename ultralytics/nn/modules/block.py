@@ -57,7 +57,6 @@ __all__ = (
     "ResNetLayer",
     "SCDown",
     "TorchVision",
-    "ModifiedCBAM",
     "CustomDoubleConv",
     "DoubleConvBackbone",
 )
@@ -2500,80 +2499,18 @@ class RealNVP(nn.Module):
         return self.prior.log_prob(z) + log_det
 
 
-class ModifiedCBAM(nn.Module):
-    """
-    Modified CBAM attention.
-
-    Instead of using sigmoid(z), this uses:
-        1 + tanh(z)
-
-    This allows attention values to range approximately from 0 to 2:
-        0 = suppress
-        1 = preserve
-        2 = enhance
-    """
-
-    def __init__(self, channels: int, reduction: int = 16, kernel_size: int = 7):
-        super().__init__()
-
-        hidden_channels = max(1, channels // reduction)
-
-        # Channel attention
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.max_pool = nn.AdaptiveMaxPool2d(1)
-
-        self.mlp = nn.Sequential(
-            nn.Conv2d(channels, hidden_channels, kernel_size=1, bias=False),
-            nn.SiLU(inplace=True),
-            nn.Conv2d(hidden_channels, channels, kernel_size=1, bias=False),
-        )
-
-        # Spatial attention
-        padding = kernel_size // 2
-        self.spatial_conv = nn.Conv2d(
-            2,
-            1,
-            kernel_size=kernel_size,
-            padding=padding,
-            bias=False,
-        )
-
-    def forward(self, x):
-        # Channel attention
-        avg_out = self.mlp(self.avg_pool(x))
-        max_out = self.mlp(self.max_pool(x))
-
-        channel_attention = 1 + torch.tanh(avg_out + max_out)
-        x = x * channel_attention
-
-        # Spatial attention
-        avg_map = torch.mean(x, dim=1, keepdim=True)
-        max_map, _ = torch.max(x, dim=1, keepdim=True)
-
-        spatial_input = torch.cat([avg_map, max_map], dim=1)
-        spatial_attention = 1 + torch.tanh(self.spatial_conv(spatial_input))
-
-        return x * spatial_attention
-
-
 class CustomDoubleConv(nn.Module):
     """
-    Strong custom DoubleConv block.
+    Revised custom DoubleConv block using the CBAM module provided in .conv.
 
     Structure:
         Conv 3x3
         Conv 3x3
         Depthwise Conv 7x7
         Pointwise channel mixer
-        Modified CBAM attention
+        Optional CBAM attention
         Residual shortcut
         SiLU activation
-
-    This satisfies the project requirements:
-        - inherits from nn.Module
-        - accepts input and output channel arguments
-        - preserves spatial size when stride is 1
-        - supports tensors shaped (N, C, H, W)
     """
 
     expansion = 1
@@ -2582,7 +2519,6 @@ class CustomDoubleConv(nn.Module):
         self,
         c1: int,
         c2: int,
-        reduction: int = 16,
         mlp_ratio: float = 2.0,
         layer_scale_init_value: float = 0.1,
         use_attention: bool = True,
@@ -2591,26 +2527,19 @@ class CustomDoubleConv(nn.Module):
 
         hidden_channels = int(c2 * mlp_ratio)
 
-        # DoubleConv local feature extraction
         self.cv1 = Conv(c1, c2, k=3, s=1)
         self.cv2 = Conv(c2, c2, k=3, s=1, act=False)
 
-        # Large-kernel depthwise spatial mixer
         self.dw = DWConv(c2, c2, k=7, s=1)
 
-        # Pointwise channel mixer
         self.pw1 = Conv(c2, hidden_channels, k=1, s=1)
         self.pw2 = Conv(hidden_channels, c2, k=1, s=1, act=False)
 
-        # Optional attention
-        self.use_attention = use_attention
-        self.attention = ModifiedCBAM(c2, reduction=reduction) if use_attention else nn.Identity()
+        # Use professor-provided CBAM from .conv
+        self.attention = CBAM(c2) if use_attention else nn.Identity()
 
-        # Residual shortcut
         self.shortcut = Conv(c1, c2, k=1, s=1, act=False) if c1 != c2 else nn.Identity()
 
-        # Layer scale, but not too tiny.
-        # 1e-6 may make the learned branch too weak early in training.
         if layer_scale_init_value > 0:
             self.layer_scale = nn.Parameter(layer_scale_init_value * torch.ones(c2))
         else:
@@ -2642,17 +2571,12 @@ class CustomDoubleConv(nn.Module):
 
 class DoubleConvBackbone(nn.Module):
     """
-    Custom YOLO26 backbone using CustomDoubleConv blocks.
+    Revised custom YOLO26 backbone using CustomDoubleConv blocks.
 
-    It returns three feature maps:
+    Returns:
         P3: stride 8
         P4: stride 16
         P5: stride 32
-
-    For imgsz=640:
-        P3 = 80 x 80
-        P4 = 40 x 40
-        P5 = 20 x 20
     """
 
     def __init__(
@@ -2669,30 +2593,23 @@ class DoubleConvBackbone(nn.Module):
 
         self.c2 = c2
 
-        # Input: 640 x 640
-        # After Conv stride 2: 320 x 320
-        # After MaxPool stride 2: 160 x 160
         self.stem = nn.Sequential(
-            Conv(c1, 64, k=7, s=2),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+            Conv(c1, 32, k=3, s=2),   # 640 -> 320
+            Conv(32, 64, k=3, s=2),   # 320 -> 160
         )
 
-        # 160 x 160
-        # Early low-level features; attention is disabled here to avoid over-filtering edges/textures.
         self.layer1 = nn.Sequential(
             CustomDoubleConv(64, 64, use_attention=False),
             CustomDoubleConv(64, 64, use_attention=False),
         )
 
-        # 160 -> 80, P3
         self.down2 = Conv(64, 128, k=3, s=2)
         self.layer2 = nn.Sequential(
-            CustomDoubleConv(128, 128, use_attention=True),
-            CustomDoubleConv(128, 128, use_attention=True),
-            CustomDoubleConv(128, 128, use_attention=True),
+            CustomDoubleConv(128, 128, use_attention=False),
+            CustomDoubleConv(128, 128, use_attention=False),
+            CustomDoubleConv(128, 128, use_attention=False),
         )
 
-        # 80 -> 40, P4
         self.down3 = Conv(128, 256, k=3, s=2)
         self.layer3 = nn.Sequential(
             CustomDoubleConv(256, 256, use_attention=True),
@@ -2700,14 +2617,12 @@ class DoubleConvBackbone(nn.Module):
             CustomDoubleConv(256, 256, use_attention=True),
         )
 
-        # 40 -> 20, P5
         self.down4 = Conv(256, 512, k=3, s=2)
         self.layer4 = nn.Sequential(
             CustomDoubleConv(512, 512, use_attention=True),
             CustomDoubleConv(512, 512, use_attention=True),
         )
 
-        # Project to YOLO head channels
         self.p3_proj = Conv(128, out_channels[0], k=1, s=1)
         self.p4_proj = Conv(256, out_channels[1], k=1, s=1)
         self.p5_proj = Conv(512, out_channels[2], k=1, s=1)

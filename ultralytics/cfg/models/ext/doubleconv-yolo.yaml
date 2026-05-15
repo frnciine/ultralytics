@@ -1,9 +1,9 @@
-# Custom YOLO26 model with DoubleConvBackbone
-# Uses a custom residual-attention DoubleConv backbone and YOLO26 head
+# Custom YOLO26 model with DoubleConvBackbone + CBAM
+# Backbone returns [P3, P4, P5]
 
-nc: 80
+nc: 3
 end2end: True
-reg_max: 1
+reg_max: 16
 
 scales:
   n: [0.50, 0.25, 1024]
@@ -17,29 +17,34 @@ backbone:
   - [-1, 1, DoubleConvBackbone, [1024, [256, 512, 1024]]] # 0
 
   # Extract P3, P4, P5 from the returned list
-  - [0, 1, Index, [256, 0]] # 1-P3/8
-  - [0, 1, Index, [512, 1]] # 2-P4/16
-  - [0, 1, Index, [1024, 2]] # 3-P5/32
+  - [0, 1, Index, [256, 0]]  # 1: P3/8
+  - [0, 1, Index, [512, 1]]  # 2: P4/16
+  - [0, 1, Index, [1024, 2]] # 3: P5/32
 
-  # YOLO26 high-level processing
+  # Process P5
   - [-1, 1, SPPF, [1024, 5, 3, True]] # 4
-  - [-1, 2, C2PSA, [1024]] # 5
+  - [-1, 2, C2PSA, [1024]]             # 5
 
 head:
+  # P5 -> P4
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
-  - [[-1, 2], 1, Concat, [1]] # cat P4
-  - [-1, 2, C3k2, [512, True]] # 8
+  - [[-1, 2], 1, Concat, [1]]          # concat with P4
+  - [-1, 2, C3k2, [512, True]]         # 8
 
+  # P4 -> P3
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
-  - [[-1, 1], 1, Concat, [1]] # cat P3
-  - [-1, 2, C3k2, [256, True]] # 11, P3/8-small
+  - [[-1, 1], 1, Concat, [1]]          # concat with P3
+  - [-1, 2, C3k2, [256, True]]         # 11: P3/8 small
 
+  # P3 -> P4
   - [-1, 1, Conv, [256, 3, 2]]
-  - [[-1, 8], 1, Concat, [1]] # cat head P4
-  - [-1, 2, C3k2, [512, True]] # 14, P4/16-medium
+  - [[-1, 8], 1, Concat, [1]]          # concat with head P4
+  - [-1, 2, C3k2, [512, True]]         # 14: P4/16 medium
 
+  # P4 -> P5
   - [-1, 1, Conv, [512, 3, 2]]
-  - [[-1, 5], 1, Concat, [1]] # cat head P5
-  - [-1, 1, C3k2, [1024, True, 0.5, True]] # 17, P5/32-large
+  - [[-1, 5], 1, Concat, [1]]          # concat with processed P5
+  - [-1, 1, C3k2, [1024, True, 0.5, True]] # 17: P5/32 large
 
+  # Detect on P3, P4, P5
   - [[11, 14, 17], 1, Detect, [nc]]
