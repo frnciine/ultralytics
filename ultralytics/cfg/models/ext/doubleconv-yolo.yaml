@@ -1,0 +1,45 @@
+# Custom YOLO26 model with DoubleConvBackbone + CBAM
+# Backbone returns [P3, P4, P5]
+
+nc: 3  # change this to your actual number of classes
+end2end: True
+reg_max: 16
+
+scales:
+  n: [0.50, 0.25, 1024]
+  s: [0.50, 0.50, 1024]
+  m: [0.50, 1.00, 512]
+  l: [1.00, 1.00, 512]
+  x: [1.00, 1.50, 512]
+
+backbone:
+  # Custom backbone returns [P3, P4, P5]
+  - [-1, 1, DoubleConvBackbone, [1024, [256, 512, 1024]]] # 0
+
+  # Extract P3, P4, P5 from the returned list
+  - [0, 1, Index, [256, 0]] # 1-P3/8
+  - [0, 1, Index, [512, 1]] # 2-P4/16
+  - [0, 1, Index, [1024, 2]] # 3-P5/32
+
+  # YOLO26 high-level processing
+  - [-1, 1, SPPF, [1024, 5, 3, True]] # 4
+  - [-1, 2, C2PSA, [1024]] # 5
+
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 2], 1, Concat, [1]] # cat P4
+  - [-1, 2, C3k2, [512, True]] # 8
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 1], 1, Concat, [1]] # cat P3
+  - [-1, 2, C3k2, [256, True]] # 11, P3/8-small
+
+  - [-1, 1, Conv, [256, 3, 2]]
+  - [[-1, 8], 1, Concat, [1]] # cat head P4
+  - [-1, 2, C3k2, [512, True]] # 14, P4/16-medium
+
+  - [-1, 1, Conv, [512, 3, 2]]
+  - [[-1, 5], 1, Concat, [1]] # cat head P5
+  - [-1, 1, C3k2, [1024, True, 0.5, True]] # 17, P5/32-large
+
+  - [[11, 14, 17], 1, Detect, [nc]]
