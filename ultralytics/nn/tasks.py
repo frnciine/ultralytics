@@ -77,6 +77,7 @@ from ultralytics.nn.modules import (
     YOLOESegment26,
     v10Detect,
     MyConvBlock,
+    CBAM,
     CustomDoubleConv,
     DoubleConvBackbone,
 )
